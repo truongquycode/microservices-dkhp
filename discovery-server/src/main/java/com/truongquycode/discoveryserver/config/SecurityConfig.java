@@ -16,20 +16,20 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 @EnableWebSecurity
 
-public class SecurityConfig { // <<--- KHÔNG KẾ THỪA TỪ LỚP NÀO CẢ
+public class SecurityConfig {
 
     @Value("${eureka.username}")
     private String username;
     @Value("${eureka.password}")
     private String password;
 
-    // Bước 1: Định nghĩa một Bean để mã hóa mật khẩu
+    // Định nghĩa một Bean để mã hóa mật khẩu
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
-    // Bước 2: Định nghĩa Bean chứa thông tin người dùng (thay cho AuthenticationManagerBuilder)
+    //Định nghĩa Bean chứa thông tin người dùng (thay cho AuthenticationManagerBuilder)
     @Bean
     public InMemoryUserDetailsManager userDetailsService(PasswordEncoder passwordEncoder) {
         UserDetails user = User.builder()
@@ -40,7 +40,7 @@ public class SecurityConfig { // <<--- KHÔNG KẾ THỪA TỪ LỚP NÀO CẢ
         return new InMemoryUserDetailsManager(user);
     }
 
-    // Bước 3: Định nghĩa Bean SecurityFilterChain để cấu hình các quy tắc bảo vệ (thay cho configure(HttpSecurity))
+    //Định nghĩa Bean SecurityFilterChain để cấu hình các quy tắc bảo vệ (thay cho configure(HttpSecurity))
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http

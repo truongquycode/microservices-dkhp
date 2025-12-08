@@ -1,7 +1,0 @@
-com\truongquycode\inventory_service\model\Inventory.class
-com\truongquycode\inventory_service\controller\InventoryController.class
-com\truongquycode\inventory_service\dto\InventoryResponse$InventoryResponseBuilder.class
-com\truongquycode\inventory_service\InventoryServiceApplication.class
-com\truongquycode\inventory_service\service\InventoryService.class
-com\truongquycode\inventory_service\repository\InventoryRepository.class
-com\truongquycode\inventory_service\dto\InventoryResponse.class

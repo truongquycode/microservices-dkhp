@@ -4,31 +4,30 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod; // Import
 import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity; // Import
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.web.server.SecurityWebFilterChain;
-import org.springframework.web.cors.CorsConfiguration; // Import
-import org.springframework.web.cors.reactive.CorsConfigurationSource; // Import
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.reactive.CorsConfigurationSource;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
-
-import java.util.Arrays; // Import
+import java.util.Arrays;
 
 @Configuration
-@EnableWebFluxSecurity // (Thêm annotation này)
+@EnableWebFluxSecurity
 public class SecurityConfig {
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         http
-            // 1. Kích hoạt CORS bằng cấu hình Bean bên dưới
+            // Kích hoạt CORS bằng cấu hình Bean bên dưới
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
 
-            // 2. Tắt CSRF
+            // Tắt CSRF
             .csrf(csrf -> csrf.disable())
 
-            // 3. Cấu hình bảo vệ đường dẫn
+            //bCấu hình bảo vệ đường dẫn
             .authorizeExchange(exchanges -> exchanges
-                // (QUAN TRỌNG) Cho phép OPTIONS đi qua
+                // Cho phép OPTIONS đi qua
                 .pathMatchers(HttpMethod.OPTIONS).permitAll() 
                 .pathMatchers("/eureka/**").permitAll() 
                 .pathMatchers("/api/auth/**").permitAll() // Cho phép API đăng nhập

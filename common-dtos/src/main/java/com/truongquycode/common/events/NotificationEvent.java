@@ -14,6 +14,6 @@ public class NotificationEvent implements Serializable {
 
     private String studentId;
     private String message;
-    private String enrollmentId; // optional, để frontend/backend liên kết
+    private String enrollmentId;
     private long timestamp;
 }

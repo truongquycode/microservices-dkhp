@@ -8,17 +8,18 @@ import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.KTable; 
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Produced;
+import org.apache.kafka.streams.kstream.Repartitioned; 
 import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorContext;
 import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.state.KeyValueStore;
-// --- 1. THÊM IMPORT NÀY ---
 import org.apache.kafka.streams.state.ValueAndTimestamp; 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.support.serializer.JsonSerde;
 import org.springframework.stereotype.Component;
 
 import com.truongquycode.common.events.EnrollmentStatus;
+import com.truongquycode.common.events.RegistrationRequestEvent;
 import com.truongquycode.common.events.RegistrationResultEvent;
 import com.truongquycode.common.events.StudentValidatedEvent;
 import com.truongquycode.course_service.config.KafkaTopicConfig;
@@ -39,35 +40,56 @@ public class RegistrationProcessor {
         
         Serde<String> stringSerde = Serdes.String();
         JsonSerde<StudentValidatedEvent> validatedEventSerde = new JsonSerde<>(StudentValidatedEvent.class);
+        JsonSerde<RegistrationRequestEvent> cancelEventSerde = new JsonSerde<>(RegistrationRequestEvent.class);
         JsonSerde<CourseSection> sectionSerde = new JsonSerde<>(CourseSection.class);
         JsonSerde<RegistrationResultEvent> resultEventSerde = new JsonSerde<>(RegistrationResultEvent.class);
-        JsonSerde<ProcessingResult> processingResultSerde = new JsonSerde<>(ProcessingResult.class);
-
+        
+        // 1. KTable (State Store) - Log cho thấy topic này có 10 partitions
         KTable<String, CourseSection> sectionsTable = builder.table(
             KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC,
             Consumed.with(stringSerde, sectionSerde),
             Materialized.as(SECTIONS_STORE_NAME)
         );
 
+        // 2. Luồng Đăng ký
         KStream<String, StudentValidatedEvent> validationStream = builder.stream(
             KafkaTopicConfig.STUDENT_VALIDATED_TOPIC,
             Consumed.with(stringSerde, validatedEventSerde)
         );
 
-        KStream<String, ProcessingResult> processingStream = validationStream.process(
+        KStream<String, ProcessingResult> registrationOutputStream = validationStream.process(
             () -> new StatefulRegistrationProcessor(), 
             SECTIONS_STORE_NAME
         );
 
-        // --- Phần 5 (Split) giữ nguyên ---
-        processingStream
+        // 3. Luồng Hủy (Cancel) - FIX LỖI Ở ĐÂY
+        KStream<String, RegistrationRequestEvent> cancelStream = builder.stream(
+            KafkaTopicConfig.REGISTRATION_CANCELLED_TOPIC, 
+            Consumed.with(stringSerde, cancelEventSerde)
+        )
+        .selectKey((key, value) -> value.getCourseSectionId()) 
+        .repartition(Repartitioned.<String, RegistrationRequestEvent>as("repartition-cancels")
+            .withKeySerde(stringSerde)
+            .withValueSerde(cancelEventSerde)
+            .withNumberOfPartitions(10) // <--- QUAN TRỌNG: Phải khớp với số partition của State Store (10)
+        );
+
+        KStream<String, ProcessingResult> cancelOutputStream = cancelStream.process(
+            () -> new StatefulCancellationProcessor(),
+            SECTIONS_STORE_NAME
+        );
+
+        // 4. Gộp và Output
+        KStream<String, ProcessingResult> mergedStream = registrationOutputStream.merge(cancelOutputStream);
+
+        mergedStream
             .mapValues(ProcessingResult::resultEvent) 
             .to(
                 KafkaTopicConfig.REGISTRATION_RESULTS_TOPIC,
                 Produced.with(stringSerde, resultEventSerde)
             );
 
-        processingStream
+        mergedStream
             .filter((key, value) -> value.updatedSection() != null) 
             .mapValues(ProcessingResult::updatedSection) 
             .to(
@@ -76,20 +98,18 @@ public class RegistrationProcessor {
             );
     }
 
-    private RegistrationResultEvent createResult(StudentValidatedEvent event, EnrollmentStatus status, String reason) {
+    private RegistrationResultEvent createResult(String enrollmentId, String studentId, EnrollmentStatus status, String reason) {
         return new RegistrationResultEvent(
-            String.valueOf(event.getEnrollmentId()), 
-            event.getStudentId(),
+            enrollmentId, 
+            studentId,
             status,
             reason,
             System.currentTimeMillis()
         );
     }
 
-    // --- SỬA LỖI TRONG LỚP NỘI BỘ NÀY ---
- // --- SỬA LỖI TRONG LỚP NỘI BỘ NÀY ---
+    // --- Processor Đăng ký (Giữ nguyên) ---
     private class StatefulRegistrationProcessor implements Processor<String, StudentValidatedEvent, String, ProcessingResult> {
-
         private KeyValueStore<String, ValueAndTimestamp<CourseSection>> sectionStore;
         private ProcessorContext<String, ProcessingResult> context;
 
@@ -104,61 +124,66 @@ public class RegistrationProcessor {
             String sectionId = record.value().getCourseSectionId();
             StudentValidatedEvent event = record.value();
 
-            // --- Bắt đầu xác định timestamp ---
-            long recordTs = record.timestamp();
-            long streamTs = this.context.currentStreamTimeMs();
-            long newTimestamp = Math.max(recordTs, streamTs);
+            long newTimestamp = Math.max(record.timestamp(), context.currentStreamTimeMs());
+            ValueAndTimestamp<CourseSection> vt = sectionStore.get(sectionId);
+            if (vt != null && newTimestamp <= vt.timestamp()) { newTimestamp = vt.timestamp() + 1; }
 
-            ValueAndTimestamp<CourseSection> timestampedSection = sectionStore.get(sectionId);
-            CourseSection section = (timestampedSection != null) ? timestampedSection.value() : null;
-
+            CourseSection section = (vt != null) ? vt.value() : null;
             ProcessingResult result;
 
             if (section == null) {
-                log.warn("Không tìm thấy lớp học (state store) với ID: {}", sectionId);
-                result = new ProcessingResult(
-                    createResult(event, EnrollmentStatus.FAILED, "Không tìm thấy mã lớp học."),
-                    null
-                );
-
+                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.FAILED, "Không tìm thấy lớp (Reg)."), null);
             } else if (section.getRegisteredSlots() >= section.getTotalSlots()) {
-                log.warn("Lớp học (state store) [{}] đã hết chỗ. ({} / {})",
-                    section.getSectionId(), section.getRegisteredSlots(), section.getTotalSlots());
-
-                result = new ProcessingResult(
-                    createResult(event, EnrollmentStatus.FAILED, "Lớp học đã hết chỗ."),
-                    section
-                );
-
+                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.FAILED, "Lớp đã hết chỗ."), section);
             } else {
-                // --- BẮT ĐẦU ĐẢM BẢO TIMESTAMP ĐƠN ĐIỆU ---
-                if (timestampedSection != null && newTimestamp <= timestampedSection.timestamp()) {
-                    // Nếu timestamp mới <= timestamp cũ => tăng thêm 1ms để giữ thứ tự
-                    newTimestamp = timestampedSection.timestamp() + 1;
-                }
-
-                // --- CẬP NHẬT STATE ---
                 section.setRegisteredSlots(section.getRegisteredSlots() + 1);
-                log.info("Đăng ký thành công (state store) cho section: {}. Số chỗ mới: {}/{}",
-                    section.getSectionId(), section.getRegisteredSlots(), section.getTotalSlots());
-
                 sectionStore.put(sectionId, ValueAndTimestamp.make(section, newTimestamp));
-
-                // --- TẠO KẾT QUẢ ---
-                result = new ProcessingResult(
-                    createResult(event, EnrollmentStatus.CONFIRMED, "Đăng ký thành công."),
-                    section
-                );
+                log.info("REGISTRATION: Tăng slot lớp {} -> {}/{}", sectionId, section.getRegisteredSlots(), section.getTotalSlots());
+                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.CONFIRMED, "Đăng ký thành công."), section);
             }
-
-            // --- FORWARD RA NGOÀI VỚI TIMESTAMP MỚI ---
             context.forward(record.withValue(result).withTimestamp(newTimestamp));
         }
+        @Override public void close() {}
+    }
 
+    // --- Processor Hủy (Đã fix) ---
+    private class StatefulCancellationProcessor implements Processor<String, RegistrationRequestEvent, String, ProcessingResult> {
+        private KeyValueStore<String, ValueAndTimestamp<CourseSection>> sectionStore;
+        private ProcessorContext<String, ProcessingResult> context;
 
         @Override
-        public void close() {
-            // Không cần làm gì
+        public void init(ProcessorContext<String, ProcessingResult> context) {
+            this.context = context;
+            this.sectionStore = context.getStateStore(SECTIONS_STORE_NAME);
         }
+
+        @Override
+        public void process(Record<String, RegistrationRequestEvent> record) {
+            String sectionId = record.value().getCourseSectionId();
+            RegistrationRequestEvent event = record.value();
+
+            long newTimestamp = Math.max(record.timestamp(), context.currentStreamTimeMs());
+            ValueAndTimestamp<CourseSection> vt = sectionStore.get(sectionId);
+            if (vt != null && newTimestamp <= vt.timestamp()) { newTimestamp = vt.timestamp() + 1; }
+
+            CourseSection section = (vt != null) ? vt.value() : null;
+            ProcessingResult result;
+
+            if (section == null) {
+                log.error("CANCEL: Không tìm thấy lớp {} trong store (Partition ID={}).", sectionId, context.taskId().partition());
+                result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.FAILED, "Không tìm thấy lớp để hủy."), null);
+            } else {
+                if (section.getRegisteredSlots() > 0) {
+                    section.setRegisteredSlots(section.getRegisteredSlots() - 1);
+                    log.info("CANCEL: Giảm slot lớp {} -> {}/{}", sectionId, section.getRegisteredSlots(), section.getTotalSlots());
+                } else {
+                    log.warn("CANCEL: Lớp {} sỉ số đã là 0.", sectionId);
+                }
+                sectionStore.put(sectionId, ValueAndTimestamp.make(section, newTimestamp));
+                result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.CANCELLED, "Hủy thành công."), section);
+            }
+            context.forward(record.withValue(result).withTimestamp(newTimestamp));
+        }
+        @Override public void close() {}
     }
 }

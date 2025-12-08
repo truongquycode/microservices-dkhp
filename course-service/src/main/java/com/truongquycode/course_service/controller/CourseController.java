@@ -2,8 +2,8 @@ package com.truongquycode.course_service.controller;
 
 import com.truongquycode.course_service.model.Course;
 import com.truongquycode.course_service.model.CourseSection;
+import com.truongquycode.course_service.model.ScheduleEntry;
 import com.truongquycode.course_service.repository.CourseRepository;
-// 1. IMPORT LẠI CourseSectionRepository
 import com.truongquycode.course_service.repository.CourseSectionRepository;
 import com.truongquycode.course_service.config.KafkaTopicConfig;
 import com.truongquycode.course_service.processor.RegistrationProcessor; 
@@ -11,159 +11,213 @@ import com.truongquycode.course_service.processor.RegistrationProcessor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Optional; 
 
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StoreQueryParameters;
 import org.apache.kafka.streams.state.QueryableStoreTypes;
 import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.config.StreamsBuilderFactoryBean;
-// 2. VẪN CẦN KafkaTemplate (cho CourseDataLoader)
-import org.springframework.kafka.core.KafkaTemplate; 
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional; 
 
 @RestController
 @RequestMapping("/api")
-@RequiredArgsConstructor // 3. SỬA LẠI CONSTRUCTOR
+@RequiredArgsConstructor
 public class CourseController {
 
     private final CourseRepository courseRepository;
-    // 4. THÊM LẠI REPOSITORY
     private final CourseSectionRepository sectionRepository; 
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final StreamsBuilderFactoryBean streamsBuilderFactoryBean;
-    
-    // --- HÀM MỚI CHO COURSES ---
-    /**
-     * TẠO MỘT KHÓA HỌC MỚI (Dữ liệu tĩnh)
-     * Vì 'Course' là dữ liệu tĩnh (không có KTable), chúng ta chỉ cần lưu vào CSDL.
-     */
+
+    // ========================================================================
+    // I. API QUẢN LÝ KHÓA HỌC (COURSE)
+    // ========================================================================
+
     @PostMapping("/courses")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    @Transactional
     public ResponseEntity<Course> createCourse(@RequestBody Course newCourse) {
         Course savedCourse = courseRepository.save(newCourse);
+        
+        // TRÁNH LỖI LAZY KHI TRẢ VỀ JSON
+        if(savedCourse.getCourseSections() != null) {
+            savedCourse.getCourseSections().size(); 
+        }
+
         return ResponseEntity.status(HttpStatus.CREATED).body(savedCourse);
     }
     
-
-    // ========================================================================
-    // HÀM MỚI: COMMANDS (CREATE, UPDATE, DELETE)
-    // GHI VÀO CSDL (ĐỒNG BỘ) - CDC SẼ TỰ ĐỘNG GỬI KAFKA
-    // ========================================================================
-
-    @PostMapping("/course-sections")
-    public ResponseEntity<CourseSection> createSection(@RequestBody CourseSection newSection) {
-        // 1. GHI VÀO CSDL
-        CourseSection savedSection = sectionRepository.save(newSection);
+    @PutMapping("/courses/{id}")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    @Transactional
+    public ResponseEntity<Course> updateCourse(@PathVariable String id, @RequestBody Course courseDetails) {
+        Optional<Course> courseOptional = courseRepository.findById(id);
+        if (courseOptional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        Course courseToUpdate = courseOptional.get();
+        courseToUpdate.setName(courseDetails.getName());
+        courseToUpdate.setCredits(courseDetails.getCredits());
         
-        // 2. Gửi sự kiện đến Kafka (Nguồn Chân Lý)
+        Course updatedCourse = courseRepository.save(courseToUpdate);
+        
+        // Load danh sách sections lên trước khi đóng transaction
+        if(updatedCourse.getCourseSections() != null) {
+            updatedCourse.getCourseSections().size(); // Ép Hibernate tải dữ liệu
+            
+            // JSON trả về đầy đủ chi tiết sâu hơn như trong getAllCourses:
+            for (CourseSection section : updatedCourse.getCourseSections()) {
+                 if (section.getScheduleEntries() != null) {
+                     section.getScheduleEntries().size();
+                 }
+            }
+        }
+        
+        return ResponseEntity.ok(updatedCourse);
+    }
+    
+    @DeleteMapping("/courses/{id}")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    public ResponseEntity<Void> deleteCourse(@PathVariable String id) {
+        if (!courseRepository.existsById(id)) {
+            return ResponseEntity.notFound().build();
+        }
+        courseRepository.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
+    
+    /**
+     * LẤY TẤT CẢ KHÓA HỌC (ĐÃ SỬA LỖI LAZY)
+     */
+    @GetMapping("/courses")
+    @Transactional(readOnly = true) 
+    public ResponseEntity<List<Course>> getAllCourses() {
+        List<Course> courses = courseRepository.findAll();
+        for (Course course : courses) {
+            // Tải CourseSections
+            course.getCourseSections().size(); 
+            
+            // Tải ScheduleEntries cho mỗi section
+            for (CourseSection section : course.getCourseSections()) {
+                section.getScheduleEntries().size();
+                // Tải luôn Course bên trong section
+                // để đảm bảo không bị lỗi vòng lặp
+                if (section.getCourse() != null) {
+                    section.getCourse().getCourseId();
+                }
+            }
+        }
+        return ResponseEntity.ok(courses);
+    }
+    
+
+    // ========================================================================
+    // II. API QUẢN LÝ LỚP HỌC PHẦN (COURSE SECTION)
+    // ========================================================================
+    
+    @PostMapping("/course-sections")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
+    @Transactional
+    public ResponseEntity<CourseSection> createSection(@RequestBody CourseSection newSection) {
+        if (newSection.getCourse() == null || newSection.getCourse().getCourseId() == null) {
+            return ResponseEntity.badRequest().build(); 
+        }
+        String courseId = newSection.getCourse().getCourseId();
+        Course managedCourse = courseRepository.findById(courseId)
+            .orElseThrow(() -> new RuntimeException("Không tìm thấy Course ID: " + courseId));
+        newSection.setCourse(managedCourse);
+        if (newSection.getScheduleEntries() != null) {
+            for (ScheduleEntry entry : newSection.getScheduleEntries()) {
+                entry.setCourseSection(newSection);
+            }
+        }
+        CourseSection savedSection = sectionRepository.save(newSection);
         kafkaTemplate.send(
             KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC, 
-            newSection.getSectionId(), 
-            newSection
+            savedSection.getSectionId(), 
+            savedSection
         );
-        
         return ResponseEntity.status(HttpStatus.CREATED).body(savedSection);
     }
 
- // Trong file CourseController.java
-
     @PutMapping("/course-sections/{id}")
+    @Transactional
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<CourseSection> updateSection(@PathVariable String id, @RequestBody CourseSection updatedSectionData) {
-        ReadOnlyKeyValueStore<String, CourseSection> sectionStore = getStore();
-        if (sectionStore == null) {
-             return ResponseEntity.status(503).build(); // Streams chưa sẵn sàng
-        }
-
-        CourseSection currentState = sectionStore.get(id);
-        if (currentState == null) {
+        Optional<CourseSection> dbEntryOpt = sectionRepository.findById(id);
+        if (dbEntryOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-
-        // --- Merge ---
-        currentState.setCourse(updatedSectionData.getCourse());
-        currentState.setSchedule(updatedSectionData.getSchedule());
-        currentState.setTotalSlots(updatedSectionData.getTotalSlots());
-
-        // ⚠️ Cho phép admin hoặc API reset số lượng đăng ký (VD: 0)
+        CourseSection entityToUpdate = dbEntryOpt.get();
+        if (updatedSectionData.getCourse() == null || updatedSectionData.getCourse().getCourseId() == null) {
+            return ResponseEntity.badRequest().build(); 
+        }
+        String courseId = updatedSectionData.getCourse().getCourseId();
+        Course managedCourse = courseRepository.findById(courseId)
+            .orElseThrow(() -> new RuntimeException("Không tìm thấy Course ID: " + courseId));
+        entityToUpdate.setCourse(managedCourse);
+        entityToUpdate.setGroupName(updatedSectionData.getGroupName());
+        entityToUpdate.setInstructorName(updatedSectionData.getInstructorName());
+        entityToUpdate.setTotalSlots(updatedSectionData.getTotalSlots());
         if (updatedSectionData.getRegisteredSlots() >= 0) {
-            currentState.setRegisteredSlots(updatedSectionData.getRegisteredSlots());
+            entityToUpdate.setRegisteredSlots(updatedSectionData.getRegisteredSlots());
         }
-
-        // --- Đặt timestamp mới lớn hơn timestamp hiện tại ---
+        entityToUpdate.setAcademicYear(updatedSectionData.getAcademicYear());
+        entityToUpdate.setSemester(updatedSectionData.getSemester());
+        if (entityToUpdate.getScheduleEntries() == null) {
+            entityToUpdate.setScheduleEntries(new ArrayList<>());
+        }
+        entityToUpdate.getScheduleEntries().clear(); 
+        if (updatedSectionData.getScheduleEntries() != null) {
+            for (ScheduleEntry newEntry : updatedSectionData.getScheduleEntries()) {
+                newEntry.setCourseSection(entityToUpdate); 
+                entityToUpdate.getScheduleEntries().add(newEntry);
+            }
+        }
         long newTs = System.currentTimeMillis();
-        if (currentState.getLastUpdatedAt() != null && newTs <= currentState.getLastUpdatedAt()) {
-            newTs = currentState.getLastUpdatedAt() + 1;
+        if (entityToUpdate.getLastUpdatedAt() != null && newTs <= entityToUpdate.getLastUpdatedAt()) {
+            newTs = entityToUpdate.getLastUpdatedAt() + 1;
         }
-        currentState.setLastUpdatedAt(newTs);
-
-        // --- Lưu DB (local) ---
-        sectionRepository.save(currentState);
-
-        // --- Gửi lại lên Kafka ---
+        entityToUpdate.setLastUpdatedAt(newTs);
+        CourseSection savedSection = sectionRepository.save(entityToUpdate);
         kafkaTemplate.send(
             KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC,
-            currentState.getSectionId(),
-            currentState
+            savedSection.getSectionId(),
+            savedSection
         );
-
-        return ResponseEntity.ok(currentState);
+        return ResponseEntity.ok(savedSection);
     }
 
-
-    // Hàm deleteSection cũng nên kiểm tra lại
     @DeleteMapping("/course-sections/{id}")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<Void> deleteSection(@PathVariable String id) {
-        // 1. KIỂM TRA TỪ KTABLE (hoặc DB đều được)
-        ReadOnlyKeyValueStore<String, CourseSection> sectionStore = getStore();
-        if (sectionStore == null) { return ResponseEntity.status(503).build(); }
-        
-        CourseSection currentState = sectionStore.get(id);
-        if (currentState == null) {
+        Optional<CourseSection> dbEntryOpt = sectionRepository.findById(id);
+        if (dbEntryOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-
-        // 2. Kiểm tra nghiệp vụ (VD: không cho xóa nếu đã có sinh viên đăng ký)
-        if (currentState.getRegisteredSlots() > 0) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                                 .body(null); // Hoặc trả về thông báo lỗi
+        CourseSection sectionToDelete = dbEntryOpt.get();
+        if (sectionToDelete.getRegisteredSlots() > 0) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null); 
         }
-
-        // 3. XÓA KHỎI CSDL
         sectionRepository.deleteById(id);
-        
-        // 4. Gửi "tombstone" (bia mộ) đến Kafka
         kafkaTemplate.send(
             KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC, 
             id, 
             null 
         );
-        
         return ResponseEntity.noContent().build();
     }
-
-
-    // ========================================================================
-    // QUERIES (GET) - VẪN ĐỌC TỪ KTABLE
-    // (Giữ nguyên không thay đổi)
-    // ========================================================================
-
-    @GetMapping("/courses")
-    public ResponseEntity<List<Course>> getAllCourses() {
-        List<Course> courses = courseRepository.findAll();
-        return ResponseEntity.ok(courses);
-    }
-
+    // --- QUERIES (ĐỌC DỮ LIỆU) ---
+    
     @GetMapping("/course-sections")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<CourseSection>> getAllCourseSections() {
         ReadOnlyKeyValueStore<String, CourseSection> sectionStore = getStore();
         if (sectionStore == null) {
@@ -175,6 +229,7 @@ public class CourseController {
     }
     
     @GetMapping("/course-sections/{id}")
+    @Transactional(readOnly = true)
     public ResponseEntity<CourseSection> getCourseSectionById(@PathVariable String id) {
         ReadOnlyKeyValueStore<String, CourseSection> sectionStore = getStore();
         if (sectionStore == null) {
@@ -186,17 +241,92 @@ public class CourseController {
         }
         return ResponseEntity.ok(section);
     }
+    
+    @GetMapping("/courses/{courseId}/sections")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<CourseSection>> getSectionsByCourse(@PathVariable String courseId) {
+        if (!courseRepository.existsById(courseId)) {
+             return ResponseEntity.notFound().build();
+        }
+        List<CourseSection> sections = sectionRepository.findByCourse_CourseId(courseId);
+        return ResponseEntity.ok(sections);
+    }
 
+    /**
+     * LẤY TẤT CẢ LỚP HỌC PHẦN (ĐỌC TỪ CSDL) - DÙNG CHO ADMIN (ĐÃ SỬA LỖI LAZY)
+     */
+    @GetMapping("/db/course-sections")
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')") 
+    @Transactional(readOnly = true) 
+    public ResponseEntity<List<CourseSection>> getAllCourseSectionsFromDb() {
+        List<CourseSection> sections = sectionRepository.findAll();
+        for (CourseSection section : sections) {
+            // Tải Course (để lấy courseId)
+            if (section.getCourse() != null) {
+                section.getCourse().getCourseId(); 
+                // Tải luôn CourseSections của Course đó
+                section.getCourse().getCourseSections().size();
+            }
+            // Tải ScheduleEntries
+            section.getScheduleEntries().size();
+        }
+        
+        return ResponseEntity.ok(sections);
+    }
+
+    /**
+     * LẤY MỘT LỚP HỌC PHẦN THEO ID (ĐỌC TỪ CSDL) (ĐÃ SỬA LỖI LAZY)
+     */
+    @GetMapping("/db/course-sections/{id}")
+    @Transactional(readOnly = true) 
+    public ResponseEntity<CourseSection> getCourseSectionFromDbById(@PathVariable String id) {
+        Optional<CourseSection> sectionOpt = sectionRepository.findById(id);
+
+        if (sectionOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        
+        CourseSection section = sectionOpt.get();
+        // Sửa lỗi Lazy:
+        if (section.getCourse() != null) {
+            section.getCourse().getCourseId();
+        }
+        section.getScheduleEntries().size();
+        
+        return ResponseEntity.ok(section);
+    }
+
+    // ========================================================================
+    // III. PHƯƠNG THỨC NỘI BỘ (PRIVATE HELPER)
+    // ========================================================================
+
+    // Hàm getStore()
     private ReadOnlyKeyValueStore<String, CourseSection> getStore() {
         KafkaStreams kafkaStreams = streamsBuilderFactoryBean.getKafkaStreams();
         if (kafkaStreams == null) {
             return null;
         }
-        return kafkaStreams.store(
-            StoreQueryParameters.fromNameAndType(
-                RegistrationProcessor.SECTIONS_STORE_NAME,
-                QueryableStoreTypes.keyValueStore()
-            )
-        );
+        try {
+            return kafkaStreams.store(
+                StoreQueryParameters.fromNameAndType(
+                    RegistrationProcessor.SECTIONS_STORE_NAME,
+                    QueryableStoreTypes.keyValueStore()
+                )
+            );
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    // Hàm getCourseWithSections()
+    @GetMapping("/courses/{id}/details")
+    @Transactional(readOnly = true)
+    public ResponseEntity<Course> getCourseWithSections(@PathVariable String id) {
+        Course course = courseRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Không tìm thấy khóa học"));
+        
+        course.getCourseSections().size(); // Khởi tạo collection
+        
+        return ResponseEntity.ok(course);
     }
 }

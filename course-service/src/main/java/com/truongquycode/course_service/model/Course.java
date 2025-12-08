@@ -1,6 +1,5 @@
 package com.truongquycode.course_service.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
@@ -16,16 +15,15 @@ import java.util.List;
 @Table(name = "courses")
 @Getter
 @Setter
-@NoArgsConstructor // <-- THÊM VÀO
-@AllArgsConstructor // <-- THÊM VÀO
+@NoArgsConstructor
+@AllArgsConstructor
 public class Course {
     @Id
     private String courseId;
     private String name;
-
+    private int credits;
     // Thêm quan hệ ngược lại để quản lý tốt hơn
     // và dùng @JsonIgnore để tránh lỗi lặp vô hạn khi chuyển sang JSON
     @OneToMany(mappedBy = "course")
-    @JsonIgnore
     private List<CourseSection> courseSections;
 }

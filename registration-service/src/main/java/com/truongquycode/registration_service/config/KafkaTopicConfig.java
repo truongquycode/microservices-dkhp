@@ -7,19 +7,14 @@ import org.springframework.kafka.config.TopicBuilder;
 
 @Configuration
 public class KafkaTopicConfig {
-
-    // Không cần hằng số ở đây nữa, hoặc dùng file chung
-    // public static final String REGISTRATION_REQUEST_TOPIC = "registration_requests_topic";
-
+    
     @Bean
     public NewTopic registrationRequestTopic() {
-        return TopicBuilder.name(TopicConstants.REGISTRATION_REQUESTS) // <-- SỬ DỤNG TÊN CHUNG
+        return TopicBuilder.name(TopicConstants.REGISTRATION_REQUESTS)
                 .partitions(10)
                 .replicas(1)
                 .build();
     }
-    
-    // Bạn cũng nên định nghĩa các topic khác ở đây
     
     @Bean
     public NewTopic studentValidatedTopic() {
@@ -33,6 +28,24 @@ public class KafkaTopicConfig {
     public NewTopic registrationResultsTopic() {
         return TopicBuilder.name(TopicConstants.REGISTRATION_RESULTS)
                 .partitions(10)
+                .replicas(1)
+                .build();
+    }
+
+    // --- MỚI: Bean tạo topic Hủy ---
+    @Bean
+    public NewTopic registrationCancelsTopic() {
+        return TopicBuilder.name(TopicConstants.REGISTRATION_CANCELS)
+                .partitions(3) // Hủy ít hơn đăng ký nên để 3 partition là đủ
+                .replicas(1)
+                .build();
+    }
+
+    // --- MỚI: Bean tạo topic Đã Hủy (để giảm sỉ số) ---
+    @Bean
+    public NewTopic registrationCancelledTopic() {
+        return TopicBuilder.name(TopicConstants.REGISTRATION_CANCELLED)
+                .partitions(3)
                 .replicas(1)
                 .build();
     }

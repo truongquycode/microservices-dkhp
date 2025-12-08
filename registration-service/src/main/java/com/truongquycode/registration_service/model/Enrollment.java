@@ -7,7 +7,6 @@ import jakarta.persistence.*;
 import lombok.Data;
 
 @Entity
-// 1. XÓA BỎ UNIQUECONSTRAINT KHỎI ĐÂY
 @Table(name = "enrollments")
 @Data
 public class Enrollment {
@@ -32,7 +31,5 @@ public class Enrollment {
     @CreationTimestamp
     @Column(updatable = false)
     private LocalDateTime createdAt;
-    
-    // 2. NÊN THÊM CỘT NÀY ĐỂ LƯU LÝ DO FAILED
     private String reason;
 }

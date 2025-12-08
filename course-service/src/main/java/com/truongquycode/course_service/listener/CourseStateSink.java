@@ -3,6 +3,7 @@ package com.truongquycode.course_service.listener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.truongquycode.course_service.config.KafkaTopicConfig;
@@ -12,11 +13,6 @@ import com.truongquycode.course_service.repository.CourseSectionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * Đây là "Sink" (Đầu ra) của kiến trúc.
- * Nhiệm vụ duy nhất: Lắng nghe Nguồn Chân Lý (Kafka)
- * và cập nhật bản sao lưu (MySQL).
- */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -26,30 +22,30 @@ public class CourseStateSink {
 
     @KafkaListener(
         topics = KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC, 
-        groupId = "course-state-sink-group", // Một group ID riêng biệt
+        groupId = "course-state-sink-group",
         properties = {
             "spring.json.value.default.type=com.truongquycode.course_service.model.CourseSection"
         }
     )
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public void handleCourseStateUpdate(ConsumerRecord<String, CourseSection> record) {
         String sectionId = record.key();
         CourseSection incoming = record.value();
-        long incomingTs = record.timestamp(); // timestamp của bản ghi trên topic
+        long incomingTs = record.timestamp();
 
         if (incoming == null) {
             sectionRepository.deleteById(sectionId);
+            log.info("SINK: Đã xóa lớp {}", sectionId);
             return;
         }
 
-        // Try conditional update
+        // Cập nhật vào MySQL nếu timestamp mới hơn
         int updatedRows = sectionRepository.updateIfNewer(sectionId, incoming.getRegisteredSlots(), incomingTs);
-        if (updatedRows == 0) {
-            // Không cập nhật vì DB có bản mới hơn; log debug
-            log.debug("SINK: Bản cập nhật của {} bị bỏ qua vì cũ hơn timestamp hiện tại (incomingTs={})", sectionId, incomingTs);
+        
+        if (updatedRows > 0) {
+            log.info("SINK: Đã đồng bộ DB lớp {} -> Slots: {}", sectionId, incoming.getRegisteredSlots());
         } else {
-            log.info("SINK: Cập nhật DB cho {} -> registeredSlots={}, ts={}", sectionId, incoming.getRegisteredSlots(), incomingTs);
+            log.debug("SINK: Bỏ qua update lớp {} (Dữ liệu cũ hoặc không thay đổi)", sectionId);
         }
     }
-
 }

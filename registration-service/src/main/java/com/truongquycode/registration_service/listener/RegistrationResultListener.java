@@ -1,5 +1,7 @@
 package com.truongquycode.registration_service.listener;
 
+import java.util.Optional; // Nhớ import cái này
+
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -17,11 +19,6 @@ public class RegistrationResultListener {
 
     private final EnrollmentRepository enrollmentRepository;
 
-    /**
-     * Lắng nghe kết quả cuối cùng từ topic 'registration_results'
-     * (do course-service hoặc các service khác gửi về)
-     */
- // <-- THÊM THUỘC TÍNH 'properties' VÀO ĐÂY
     @KafkaListener(
         topics = "registration_results", 
         groupId = "registration-group-result",
@@ -32,14 +29,22 @@ public class RegistrationResultListener {
     public void handleRegistrationResult(RegistrationResultEvent event) {
         
         long enrollmentId = Long.parseLong(event.getEnrollmentId());
-        log.info("REGISTRATION_SERVICE: Nhận được kết quả cho enrollment [ID={}] -> {}, Lý do: {}", 
-            enrollmentId, event.getStatus(), event.getReason());
+        
+        // --- SỬA ĐOẠN NÀY ---
+        // Thay vì dùng .orElseThrow() gây lỗi, ta dùng Optional để kiểm tra trước
+        Optional<Enrollment> enrollmentOpt = enrollmentRepository.findById(enrollmentId);
+
+        if (enrollmentOpt.isEmpty()) {
+            // Nếu không tìm thấy trong DB (do đã bị xóa tay), chỉ log warning và bỏ qua
+            log.warn("REGISTRATION_SERVICE: Bỏ qua kết quả cho enrollment ID={} vì không tìm thấy trong DB (Có thể đã bị xóa)", enrollmentId);
+            return; // Kết thúc hàm, Kafka sẽ coi như đã xử lý xong message này
+        }
+
+        Enrollment enrollment = enrollmentOpt.get();
+        // --------------------
 
         try {
-            Enrollment enrollment = enrollmentRepository.findById(enrollmentId)
-                .orElseThrow(() -> new RuntimeException("Không tìm thấy enrollment với ID: " + enrollmentId));
-
-            // Cập nhật trạng thái cuối cùng (CONFIRMED hoặc FAILED) từ event
+            // Cập nhật trạng thái
             enrollment.setStatus(event.getStatus());
             enrollmentRepository.save(enrollment);
 
@@ -47,7 +52,7 @@ public class RegistrationResultListener {
                 enrollmentId, event.getStatus());
 
         } catch (Exception e) {
-            log.error("REGISTRATION_SERVICE: Lỗi khi cập nhật kết quả cho enrollment [ID={}]", enrollmentId, e);
+            log.error("REGISTRATION_SERVICE: Lỗi khi lưu xuống DB enrollment [ID={}]", enrollmentId, e);
         }
     }
 }

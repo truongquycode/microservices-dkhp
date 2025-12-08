@@ -10,5 +10,5 @@ import lombok.NoArgsConstructor;
 public class StudentValidatedEvent {
     private Long enrollmentId;
     private String studentId;
-    private String courseSectionId; // <- ĐÃ THAY ĐỔI
+    private String courseSectionId;
 }
