@@ -8,7 +8,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 public class StudentValidatedEvent {
-    private Long enrollmentId;
+    private String enrollmentId;   // <-- CHUYỂN TỪ Long -> String
     private String studentId;
     private String courseSectionId;
 }

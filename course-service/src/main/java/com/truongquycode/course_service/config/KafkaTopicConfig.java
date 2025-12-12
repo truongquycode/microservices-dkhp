@@ -21,11 +21,13 @@ public class KafkaTopicConfig {
     public static final String REGISTRATION_RESULTS_TOPIC = "registration_results";
     
     public static final String REGISTRATION_CANCELLED_TOPIC = "registration_cancelled";
+    public static final String COURSE_SECTIONS_UPDATES_TOPIC = "course_sections_updates";
+    public static final int PARTITIONS = 50;
 
     @Bean
     public NewTopic courseSectionsStateTopic() {
         return TopicBuilder.name(COURSE_SECTIONS_STATE_TOPIC)
-                .partitions(10) // Nên bằng số partition của topic input
+                .partitions(50) // Nên bằng số partition của topic input
                 .replicas(1)
                 // Áp dụng kiến thức CHƯƠG 4: Compacted Topics
                 // Kafka sẽ chỉ giữ lại BẢN GHI MỚI NHẤT cho mỗi key (sectionId)
@@ -37,7 +39,7 @@ public class KafkaTopicConfig {
     @Bean
     public NewTopic studentValidatedTopic() {
         return TopicBuilder.name(STUDENT_VALIDATED_TOPIC)
-                .partitions(10)
+                .partitions(50)
                 .replicas(1)
                 .build();
     }
@@ -45,7 +47,7 @@ public class KafkaTopicConfig {
     @Bean
     public NewTopic registrationResultsTopic() {
         return TopicBuilder.name(REGISTRATION_RESULTS_TOPIC)
-                .partitions(10)
+                .partitions(50)
                 .replicas(1)
                 .build();
     }

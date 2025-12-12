@@ -11,7 +11,7 @@ public class KafkaTopicConfig {
     @Bean
     public NewTopic registrationRequestTopic() {
         return TopicBuilder.name(TopicConstants.REGISTRATION_REQUESTS)
-                .partitions(10)
+                .partitions(50)
                 .replicas(1)
                 .build();
     }
@@ -19,7 +19,7 @@ public class KafkaTopicConfig {
     @Bean
     public NewTopic studentValidatedTopic() {
         return TopicBuilder.name(TopicConstants.STUDENT_VALIDATED)
-                .partitions(10)
+                .partitions(50)
                 .replicas(1)
                 .build();
     }
@@ -27,7 +27,7 @@ public class KafkaTopicConfig {
     @Bean
     public NewTopic registrationResultsTopic() {
         return TopicBuilder.name(TopicConstants.REGISTRATION_RESULTS)
-                .partitions(10)
+                .partitions(50)
                 .replicas(1)
                 .build();
     }

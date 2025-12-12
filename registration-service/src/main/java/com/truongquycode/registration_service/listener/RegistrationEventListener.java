@@ -8,10 +8,10 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.truongquycode.registration_service.config.TopicConstants; 
+import com.truongquycode.registration_service.config.TopicConstants;
 import com.truongquycode.common.events.EnrollmentStatus;
 import com.truongquycode.common.events.RegistrationRequestEvent;
-import com.truongquycode.common.events.StudentValidatedEvent; 
+import com.truongquycode.common.events.StudentValidatedEvent;
 import com.truongquycode.registration_service.model.Enrollment;
 import com.truongquycode.registration_service.repository.EnrollmentRepository;
 
@@ -35,7 +35,7 @@ public class RegistrationEventListener {
     )
     @Transactional
     public void handleRegistrationRequest(RegistrationRequestEvent event) {
-        log.info("REGISTRATION: Xử lý đăng ký [EventID={}]", event.getEnrollmentId());
+        log.info("REGISTRATION: Handling registration request [EventID={}]", event.getEnrollmentId());
 
         try {
             List<Enrollment> existingList = enrollmentRepository
@@ -45,13 +45,14 @@ public class RegistrationEventListener {
                     .anyMatch(e -> e.getStatus() == EnrollmentStatus.PENDING || e.getStatus() == EnrollmentStatus.CONFIRMED);
 
             Enrollment enrollment = new Enrollment();
+            // Save the original eventId (UUID string) so we can correlate results later
             enrollment.setEventId(event.getEnrollmentId());
             enrollment.setStudentId(event.getStudentId());
             enrollment.setCourseSectionId(event.getCourseSectionId());
             enrollment.setCreatedAt(LocalDateTime.now());
 
 //            if (alreadyProcessed) {
-//                log.warn("Đã đăng ký rồi. EventID={} -> FAILED", event.getEnrollmentId());
+//                log.warn("Already registered before for student {} section {} - EventID={} -> mark FAILED", event.getStudentId(), event.getCourseSectionId(), event.getEnrollmentId());
 //                enrollment.setStatus(EnrollmentStatus.FAILED);
 //                enrollment.setReason("Đã đăng ký rồi.");
 //                enrollmentRepository.save(enrollment); 
@@ -61,8 +62,9 @@ public class RegistrationEventListener {
             enrollment.setStatus(EnrollmentStatus.PENDING);
             Enrollment savedEnrollment = enrollmentRepository.save(enrollment);
 
+            // IMPORTANT: use the eventId (UUID) so downstream correlation works consistently
             StudentValidatedEvent validatedEvent = new StudentValidatedEvent(
-                savedEnrollment.getId(), 
+                savedEnrollment.getEventId(),  // <-- eventId UUID string
                 savedEnrollment.getStudentId(),
                 savedEnrollment.getCourseSectionId()
             );
@@ -70,7 +72,7 @@ public class RegistrationEventListener {
             kafkaTemplate.send(TopicConstants.STUDENT_VALIDATED, event.getCourseSectionId(), validatedEvent);
 
         } catch (Exception e) {
-            log.error("Lỗi xử lý đăng ký", e);
+            log.error("Error handling registration", e);
             saveError(event, e.getMessage());
         }
     }
@@ -82,7 +84,7 @@ public class RegistrationEventListener {
     )
     @Transactional
     public void handleCancelRequest(RegistrationRequestEvent event) {
-        log.info("CANCEL: Xử lý hủy [EventID={}]", event.getEnrollmentId());
+        log.info("CANCEL: Handling cancel [EventID={}]", event.getEnrollmentId());
         try {
             List<Enrollment> list = enrollmentRepository
                  .findAndLockByStudentIdAndCourseSectionId(event.getStudentId(), event.getCourseSectionId());
@@ -107,13 +109,12 @@ public class RegistrationEventListener {
             enrollmentRepository.save(result);
 
             if (found) {
-
-                log.info("Gửi sự kiện registration_cancelled để CourseService giảm sỉ số");
+                log.info("Publishing registration_cancelled to CourseService for section {}", event.getCourseSectionId());
                 kafkaTemplate.send("registration_cancelled", event.getCourseSectionId(), event);
             }
 
         } catch (Exception e) {
-            log.error("Lỗi xử lý hủy", e);
+            log.error("Error handling cancel", e);
             saveError(event, e.getMessage());
         }
     }

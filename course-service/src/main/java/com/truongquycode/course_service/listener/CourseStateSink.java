@@ -21,7 +21,7 @@ public class CourseStateSink {
     private final CourseSectionRepository sectionRepository;
 
     @KafkaListener(
-        topics = KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC, 
+        topics = KafkaTopicConfig.COURSE_SECTIONS_UPDATES_TOPIC, // LISTEN to UPDATES (not the original source topic)
         groupId = "course-state-sink-group",
         properties = {
             "spring.json.value.default.type=com.truongquycode.course_service.model.CourseSection"
@@ -35,17 +35,17 @@ public class CourseStateSink {
 
         if (incoming == null) {
             sectionRepository.deleteById(sectionId);
-            log.info("SINK: Đã xóa lớp {}", sectionId);
+            log.info("SINK: Deleted section {}", sectionId);
             return;
         }
 
-        // Cập nhật vào MySQL nếu timestamp mới hơn
+        // Use repository's "update if newer" semantics to avoid regressions
         int updatedRows = sectionRepository.updateIfNewer(sectionId, incoming.getRegisteredSlots(), incomingTs);
-        
+
         if (updatedRows > 0) {
-            log.info("SINK: Đã đồng bộ DB lớp {} -> Slots: {}", sectionId, incoming.getRegisteredSlots());
+            log.info("SINK: Synced DB section {} -> slots: {} (ts={})", sectionId, incoming.getRegisteredSlots(), incomingTs);
         } else {
-            log.debug("SINK: Bỏ qua update lớp {} (Dữ liệu cũ hoặc không thay đổi)", sectionId);
+            log.debug("SINK: Skip update for section {} (incoming ts {} not newer)", sectionId, incomingTs);
         }
     }
 }

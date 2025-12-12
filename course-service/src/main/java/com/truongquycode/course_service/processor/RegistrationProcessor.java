@@ -5,15 +5,16 @@ import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KTable; 
+import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.Materialized;
+import org.apache.kafka.streams.kstream.Repartitioned;
 import org.apache.kafka.streams.kstream.Produced;
-import org.apache.kafka.streams.kstream.Repartitioned; 
+import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.ValueAndTimestamp;
 import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorContext;
 import org.apache.kafka.streams.processor.api.Record;
-import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.streams.state.ValueAndTimestamp; 
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.support.serializer.JsonSerde;
 import org.springframework.stereotype.Component;
@@ -37,41 +38,52 @@ public class RegistrationProcessor {
 
     @Autowired
     public void processRegistrations(StreamsBuilder builder) {
-        
+
         Serde<String> stringSerde = Serdes.String();
         JsonSerde<StudentValidatedEvent> validatedEventSerde = new JsonSerde<>(StudentValidatedEvent.class);
-        JsonSerde<RegistrationRequestEvent> cancelEventSerde = new JsonSerde<>(RegistrationRequestEvent.class);
+        JsonSerde<RegistrationRequestEvent> requestSerde = new JsonSerde<>(RegistrationRequestEvent.class);
         JsonSerde<CourseSection> sectionSerde = new JsonSerde<>(CourseSection.class);
         JsonSerde<RegistrationResultEvent> resultEventSerde = new JsonSerde<>(RegistrationResultEvent.class);
-        
-        // 1. KTable (State Store) - Log cho thấy topic này có 10 partitions
+
+        // 1. Read existing sections into a KTable state store (this is read-only for Streams app)
         KTable<String, CourseSection> sectionsTable = builder.table(
             KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC,
             Consumed.with(stringSerde, sectionSerde),
-            Materialized.as(SECTIONS_STORE_NAME)
+            Materialized.<String, CourseSection, KeyValueStore<org.apache.kafka.common.utils.Bytes, byte[]>>as(SECTIONS_STORE_NAME)
+                .withKeySerde(stringSerde)
+                .withValueSerde(sectionSerde)
         );
 
-        // 2. Luồng Đăng ký
+        // 2. Student validated stream (registration finalization)
         KStream<String, StudentValidatedEvent> validationStream = builder.stream(
             KafkaTopicConfig.STUDENT_VALIDATED_TOPIC,
             Consumed.with(stringSerde, validatedEventSerde)
-        );
-
-        KStream<String, ProcessingResult> registrationOutputStream = validationStream.process(
-            () -> new StatefulRegistrationProcessor(), 
-            SECTIONS_STORE_NAME
-        );
-
-        // 3. Luồng Hủy (Cancel) - FIX LỖI Ở ĐÂY
-        KStream<String, RegistrationRequestEvent> cancelStream = builder.stream(
-            KafkaTopicConfig.REGISTRATION_CANCELLED_TOPIC, 
-            Consumed.with(stringSerde, cancelEventSerde)
         )
-        .selectKey((key, value) -> value.getCourseSectionId()) 
+        // ensure key = sectionId
+        .selectKey((key, value) -> value.getCourseSectionId())
+        // make sure partitioning matches store partitions
+        .repartition(Repartitioned.<String, StudentValidatedEvent>as("repartition-validations")
+            .withKeySerde(stringSerde)
+            .withValueSerde(validatedEventSerde)
+            .withNumberOfPartitions(KafkaTopicConfig.PARTITIONS)
+        );
+
+        // 3. Cancel stream (from registration service)
+        KStream<String, RegistrationRequestEvent> cancelStream = builder.stream(
+            KafkaTopicConfig.REGISTRATION_CANCELLED_TOPIC,
+            Consumed.with(stringSerde, requestSerde)
+        )
+        .selectKey((k, v) -> v.getCourseSectionId())
         .repartition(Repartitioned.<String, RegistrationRequestEvent>as("repartition-cancels")
             .withKeySerde(stringSerde)
-            .withValueSerde(cancelEventSerde)
-            .withNumberOfPartitions(10) // <--- QUAN TRỌNG: Phải khớp với số partition của State Store (10)
+            .withValueSerde(requestSerde)
+            .withNumberOfPartitions(KafkaTopicConfig.PARTITIONS)
+        );
+
+        // 4. Process streams using processors that access the same state store.
+        KStream<String, ProcessingResult> registrationOutputStream = validationStream.process(
+            () -> new StatefulRegistrationProcessor(),
+            SECTIONS_STORE_NAME
         );
 
         KStream<String, ProcessingResult> cancelOutputStream = cancelStream.process(
@@ -79,28 +91,24 @@ public class RegistrationProcessor {
             SECTIONS_STORE_NAME
         );
 
-        // 4. Gộp và Output
-        KStream<String, ProcessingResult> mergedStream = registrationOutputStream.merge(cancelOutputStream);
+        // 5. Merge results and write outputs:
+        KStream<String, ProcessingResult> merged = registrationOutputStream.merge(cancelOutputStream);
 
-        mergedStream
-            .mapValues(ProcessingResult::resultEvent) 
-            .to(
-                KafkaTopicConfig.REGISTRATION_RESULTS_TOPIC,
-                Produced.with(stringSerde, resultEventSerde)
-            );
+        // a) results events (to registration_results)
+        merged
+            .mapValues(ProcessingResult::resultEvent)
+            .to(KafkaTopicConfig.REGISTRATION_RESULTS_TOPIC, Produced.with(stringSerde, resultEventSerde));
 
-        mergedStream
-            .filter((key, value) -> value.updatedSection() != null) 
-            .mapValues(ProcessingResult::updatedSection) 
-            .to(
-                KafkaTopicConfig.COURSE_SECTIONS_STATE_TOPIC,
-                Produced.with(stringSerde, sectionSerde)
-            );
+        // b) section updates -> write to a separate updates topic (avoid writing back into the KTable source topic)
+        merged
+            .filter((k, v) -> v.updatedSection() != null)
+            .mapValues(ProcessingResult::updatedSection)
+            .to(KafkaTopicConfig.COURSE_SECTIONS_UPDATES_TOPIC, Produced.with(stringSerde, sectionSerde));
     }
 
     private RegistrationResultEvent createResult(String enrollmentId, String studentId, EnrollmentStatus status, String reason) {
         return new RegistrationResultEvent(
-            enrollmentId, 
+            enrollmentId,
             studentId,
             status,
             reason,
@@ -108,7 +116,7 @@ public class RegistrationProcessor {
         );
     }
 
-    // --- Processor Đăng ký (Giữ nguyên) ---
+    // --- Processor for registration confirmations ---
     private class StatefulRegistrationProcessor implements Processor<String, StudentValidatedEvent, String, ProcessingResult> {
         private KeyValueStore<String, ValueAndTimestamp<CourseSection>> sectionStore;
         private ProcessorContext<String, ProcessingResult> context;
@@ -126,27 +134,35 @@ public class RegistrationProcessor {
 
             long newTimestamp = Math.max(record.timestamp(), context.currentStreamTimeMs());
             ValueAndTimestamp<CourseSection> vt = sectionStore.get(sectionId);
-            if (vt != null && newTimestamp <= vt.timestamp()) { newTimestamp = vt.timestamp() + 1; }
+            if (vt != null && newTimestamp <= vt.timestamp()) {
+                newTimestamp = vt.timestamp() + 1;
+            }
 
             CourseSection section = (vt != null) ? vt.value() : null;
             ProcessingResult result;
 
             if (section == null) {
-                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.FAILED, "Không tìm thấy lớp (Reg)."), null);
+                result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.FAILED, "Không tìm thấy lớp (Reg)."), null);
             } else if (section.getRegisteredSlots() >= section.getTotalSlots()) {
-                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.FAILED, "Lớp đã hết chỗ."), section);
+                result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.FAILED, "Lớp đã hết chỗ."), section);
             } else {
-                section.setRegisteredSlots(section.getRegisteredSlots() + 1);
+                // safe because all events for this section go to the same partition/task
+                int newSlots = section.getRegisteredSlots() + 1;
+                section.setRegisteredSlots(newSlots);
+                section.setLastUpdatedAt(newTimestamp); // if CourseSection has such field
                 sectionStore.put(sectionId, ValueAndTimestamp.make(section, newTimestamp));
-                log.info("REGISTRATION: Tăng slot lớp {} -> {}/{}", sectionId, section.getRegisteredSlots(), section.getTotalSlots());
-                result = new ProcessingResult(createResult(String.valueOf(event.getEnrollmentId()), event.getStudentId(), EnrollmentStatus.CONFIRMED, "Đăng ký thành công."), section);
+                log.info("REGISTRATION: Section={} slots {}/{}", sectionId, newSlots, section.getTotalSlots());
+                result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.CONFIRMED, "Đăng ký thành công."), section);
             }
+
             context.forward(record.withValue(result).withTimestamp(newTimestamp));
         }
-        @Override public void close() {}
+
+        @Override
+        public void close() {}
     }
 
-    // --- Processor Hủy (Đã fix) ---
+    // --- Processor for cancellations ---
     private class StatefulCancellationProcessor implements Processor<String, RegistrationRequestEvent, String, ProcessingResult> {
         private KeyValueStore<String, ValueAndTimestamp<CourseSection>> sectionStore;
         private ProcessorContext<String, ProcessingResult> context;
@@ -164,7 +180,9 @@ public class RegistrationProcessor {
 
             long newTimestamp = Math.max(record.timestamp(), context.currentStreamTimeMs());
             ValueAndTimestamp<CourseSection> vt = sectionStore.get(sectionId);
-            if (vt != null && newTimestamp <= vt.timestamp()) { newTimestamp = vt.timestamp() + 1; }
+            if (vt != null && newTimestamp <= vt.timestamp()) {
+                newTimestamp = vt.timestamp() + 1;
+            }
 
             CourseSection section = (vt != null) ? vt.value() : null;
             ProcessingResult result;
@@ -175,15 +193,19 @@ public class RegistrationProcessor {
             } else {
                 if (section.getRegisteredSlots() > 0) {
                     section.setRegisteredSlots(section.getRegisteredSlots() - 1);
-                    log.info("CANCEL: Giảm slot lớp {} -> {}/{}", sectionId, section.getRegisteredSlots(), section.getTotalSlots());
+                    log.info("CANCEL: Section={} slots {}/{}", sectionId, section.getRegisteredSlots(), section.getTotalSlots());
                 } else {
-                    log.warn("CANCEL: Lớp {} sỉ số đã là 0.", sectionId);
+                    log.warn("CANCEL: Section {} slots already 0.", sectionId);
                 }
+                section.setLastUpdatedAt(newTimestamp); // if CourseSection has such field
                 sectionStore.put(sectionId, ValueAndTimestamp.make(section, newTimestamp));
                 result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.CANCELLED, "Hủy thành công."), section);
             }
+
             context.forward(record.withValue(result).withTimestamp(newTimestamp));
         }
-        @Override public void close() {}
+
+        @Override
+        public void close() {}
     }
 }
