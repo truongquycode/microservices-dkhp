@@ -52,7 +52,7 @@ Hệ thống bao gồm các Service độc lập giao tiếp qua REST API và Ka
 | Service Name | Port | Mô tả |
 | :--- | :--- | :--- |
 | `discovery-server` | `8761` | Eureka Server - Quản lý định danh dịch vụ |
-| `api-gateway` | `8888` | Cổng vào duy nhất, định tuyến & xác thực Token |
+| `api-gateway` | `8080` | Cổng vào duy nhất, định tuyến & xác thực Token |
 | `identity-service` | `8081` | Kết nối Keycloak, quản lý User Info |
 | `course-service` | `8082` | Quản lý Môn học, RocksDB Store |
 | `registration-service`| `8083` | **Core:** Nhận request -> Kafka -> Xử lý đăng ký |
