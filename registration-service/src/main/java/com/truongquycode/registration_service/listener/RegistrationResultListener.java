@@ -22,6 +22,7 @@ public class RegistrationResultListener {
     @KafkaListener(
         topics = "registration_results", 
         groupId = "registration-group-result",
+//        		concurrency = "10",
         properties = {
             "spring.json.value.default.type=com.truongquycode.common.events.RegistrationResultEvent"
         }
@@ -44,7 +45,7 @@ public class RegistrationResultListener {
             enrollment.setStatus(event.getStatus());
             enrollmentRepository.save(enrollment);
 
-            log.info("REGISTRATION_SERVICE: Updated enrollment (eventId={}) -> {}", eventId, event.getStatus());
+//            log.info("REGISTRATION_SERVICE: Updated enrollment (eventId={}) -> {}", eventId, event.getStatus());
 
         } catch (Exception e) {
             log.error("REGISTRATION_SERVICE: Error saving enrollment (eventId={})", eventId, e);

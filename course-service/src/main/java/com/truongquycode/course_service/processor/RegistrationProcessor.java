@@ -151,7 +151,7 @@ public class RegistrationProcessor {
                 section.setRegisteredSlots(newSlots);
                 section.setLastUpdatedAt(newTimestamp); // if CourseSection has such field
                 sectionStore.put(sectionId, ValueAndTimestamp.make(section, newTimestamp));
-                log.info("REGISTRATION: Section={} slots {}/{}", sectionId, newSlots, section.getTotalSlots());
+//                log.info("REGISTRATION: Section={} slots {}/{}", sectionId, newSlots, section.getTotalSlots());
                 result = new ProcessingResult(createResult(event.getEnrollmentId(), event.getStudentId(), EnrollmentStatus.CONFIRMED, "Đăng ký thành công."), section);
             }
 

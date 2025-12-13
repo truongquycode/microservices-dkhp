@@ -23,11 +23,12 @@ public class CourseStateSink {
     @KafkaListener(
         topics = KafkaTopicConfig.COURSE_SECTIONS_UPDATES_TOPIC, // LISTEN to UPDATES (not the original source topic)
         groupId = "course-state-sink-group",
+//        concurrency = "5",
         properties = {
             "spring.json.value.default.type=com.truongquycode.course_service.model.CourseSection"
         }
     )
-    @Transactional(isolation = Isolation.REPEATABLE_READ)
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void handleCourseStateUpdate(ConsumerRecord<String, CourseSection> record) {
         String sectionId = record.key();
         CourseSection incoming = record.value();
@@ -43,7 +44,7 @@ public class CourseStateSink {
         int updatedRows = sectionRepository.updateIfNewer(sectionId, incoming.getRegisteredSlots(), incomingTs);
 
         if (updatedRows > 0) {
-            log.info("SINK: Synced DB section {} -> slots: {} (ts={})", sectionId, incoming.getRegisteredSlots(), incomingTs);
+//            log.info("SINK: Synced DB section {} -> slots: {} (ts={})", sectionId, incoming.getRegisteredSlots(), incomingTs);
         } else {
             log.debug("SINK: Skip update for section {} (incoming ts {} not newer)", sectionId, incomingTs);
         }

@@ -30,19 +30,20 @@ public class RegistrationEventListener {
 
     @KafkaListener(
         topics = TopicConstants.REGISTRATION_REQUESTS, 
+//        concurrency = "10",
         groupId = KAFKA_GROUP_ID,
         properties = {"spring.json.value.default.type=com.truongquycode.common.events.RegistrationRequestEvent"}
     )
     @Transactional
     public void handleRegistrationRequest(RegistrationRequestEvent event) {
-        log.info("REGISTRATION: Handling registration request [EventID={}]", event.getEnrollmentId());
+//        log.info("REGISTRATION: Handling registration request [EventID={}]", event.getEnrollmentId());
 
         try {
-            List<Enrollment> existingList = enrollmentRepository
-                 .findAndLockByStudentIdAndCourseSectionId(event.getStudentId(), event.getCourseSectionId());
-
-            boolean alreadyProcessed = existingList.stream()
-                    .anyMatch(e -> e.getStatus() == EnrollmentStatus.PENDING || e.getStatus() == EnrollmentStatus.CONFIRMED);
+//            List<Enrollment> existingList = enrollmentRepository
+//                 .findAndLockByStudentIdAndCourseSectionId(event.getStudentId(), event.getCourseSectionId());
+//
+//            boolean alreadyProcessed = existingList.stream()
+//                    .anyMatch(e -> e.getStatus() == EnrollmentStatus.PENDING || e.getStatus() == EnrollmentStatus.CONFIRMED);
 
             Enrollment enrollment = new Enrollment();
             // Save the original eventId (UUID string) so we can correlate results later

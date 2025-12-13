@@ -23,7 +23,7 @@ public class RegistrationService {
     private final EnrollmentRepository enrollmentRepository;
 
     public String requestRegistration(RegistrationRequestDto dto, String studentId) {
-        log.info("Tiếp nhận yêu cầu đăng ký: SV={} Lớp={}", studentId, dto.getCourseSectionId());
+//        log.info("Tiếp nhận yêu cầu đăng ký: SV={} Lớp={}", studentId, dto.getCourseSectionId());
 
         String enrollmentId = UUID.randomUUID().toString();
 
