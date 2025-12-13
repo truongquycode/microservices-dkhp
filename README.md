@@ -72,7 +72,6 @@ Hệ thống bao gồm các Service độc lập giao tiếp qua REST API và Ka
 #### 2. Khởi tạo Infrastructure (Docker)
 Tại thư mục gốc của dự án, chạy lệnh sau để khởi tạo MySQL, Kafka, Keycloak:
 
-```bash
 docker-compose up -d
 
 Đợi khoảng 1-2 phút để các container khởi động hoàn toàn.
